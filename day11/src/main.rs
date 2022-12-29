@@ -1,5 +1,5 @@
 mod day11 {
-    use std::io::BufRead;
+    use std::{io::BufRead, collections::HashMap};
     use regex::Regex;
 
     pub fn level_of_monkey_business_after_rounds(input: &mut dyn BufRead, rounds: usize, relief: Option<u128>) -> u128 {
@@ -26,18 +26,25 @@ mod day11 {
     }
 
     fn parse_monkey(lines: &[String]) -> Monkey {
-        let items = parse_starting_items(lines.get(1).unwrap());
+        let monkey_id = parse_monkey_id(lines.get(0).unwrap());
+        let items = parse_starting_items(lines.get(1).unwrap(), monkey_id);
         let (operator, operand) = parse_operation(lines.get(2).unwrap());
         let divisible_by = parse_divisible_by(lines.get(3).unwrap());
         let monkey_to_throw_if_true = parse_monkey_to_throw_if_true(lines.get(4).unwrap());
         let monkey_to_throw_if_false = parse_monkey_to_throw_if_false(lines.get(5).unwrap());
-        return Monkey { items, operator, operand, divisible_by, monkey_to_throw_if_true, monkey_to_throw_if_false, inspected_items: 0 };
+        return Monkey { items, operator, operand, divisible_by, monkey_to_throw_if_true, monkey_to_throw_if_false, inspected_items: 0, cache: HashMap::new() };
     }
 
-    fn parse_starting_items(line: &String) -> Vec<Item> {
-        return line.split_once(':').unwrap().1.trim()
-            .split(", ").map(|i| i.parse::<u128>().unwrap())
-            .map(|v| Item::new(v))
+    fn parse_monkey_id(line: &String) -> usize {
+        let re = Regex::new(r"Monkey (\d+):").unwrap();
+        return re.captures(line).unwrap().get(1).unwrap().as_str().parse::<usize>().unwrap();
+    }
+
+    fn parse_starting_items(line: &String, monkey_id: usize) -> Vec<Item> {
+        let items = line.split_once(':').unwrap().1.trim()
+            .split(", ").map(|i| i.parse::<u128>().unwrap()).collect::<Vec<u128>>();
+        return items.iter().zip(0..items.len())
+            .map(|(v, i)| Item::new(format!("{}_{}", monkey_id, i), *v))
             .collect();
     }
 
@@ -84,17 +91,19 @@ mod day11 {
         divisible_by: u128,
         monkey_to_throw_if_true: usize,
         monkey_to_throw_if_false: usize,
-        inspected_items: u128
+        inspected_items: u128,
+        cache: HashMap<String, (usize, u128)>
     }
 
     struct Item {
+        id: String,
         initial_value: u128,
         operations: Vec<(Operator, Option<u128>)>
     }
 
     impl Item {
-        fn new(initial_value: u128) -> Item {
-            Item { initial_value, operations: Vec::new() }
+        fn new(id: String, initial_value: u128) -> Item {
+            Item { id, initial_value, operations: Vec::new() }
         }
 
         fn add_operation(&mut self, operator: Operator, operand: Option<u128>) {
@@ -105,10 +114,12 @@ mod day11 {
             self.operations.push((Operator::DIV, Some(relief)));
         }
 
-        fn perform_operations(&self, optimiser: Option<u128>) -> u128 {
-            let mut value = self.initial_value;
+        fn perform_operations(&self, optimiser: Option<u128>, cached_value: Option<(usize, u128)>) -> u128 {
+            // let mut value = self.initial_value;
+            // let s = self.operations.len();
+            let (offset, mut value) = cached_value.unwrap_or((0, self.initial_value));
 
-            for (operator, operand) in self.operations.iter() {
+            for (operator, operand) in self.operations.iter().skip(offset) {
                 let operand = operand.unwrap_or(value);
                 value = self.perform_operation(optimiser.map(|d| value % d).unwrap_or(value), operator, optimiser.map(|d| operand % d).unwrap_or(operand));
             };
@@ -154,10 +165,16 @@ mod day11 {
             return (item, monkey_to_throw_to);
         }
 
-        fn passes_test(&self, item: &Item, relief: Option<u128>) -> bool {
+        fn passes_test(&mut self, item: &Item, relief: Option<u128>) -> bool {
             let optimiser: Option<u128> = if relief.is_none() { Some(self.divisible_by) } else { None };
-            let worry_level = item.perform_operations(optimiser);
+            let v = self.cache.remove(&item.id);
+            let worry_level = item.perform_operations(optimiser, v);
+            self.cache_worry_level(item, worry_level);
             return worry_level % self.divisible_by == 0;
+        }
+
+        fn cache_worry_level(&mut self, item: &Item, worry_level: u128) {
+            self.cache.insert(String::from(&item.id), (item.operations.len(), worry_level));
         }
     }
 
