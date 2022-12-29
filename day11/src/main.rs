@@ -2,11 +2,12 @@ mod day11 {
     use std::io::BufRead;
     use regex::Regex;
 
-    pub fn level_of_monkey_business_after_rounds(input: &mut dyn BufRead, rounds: usize, relief: u32) -> u32 {
+    pub fn level_of_monkey_business_after_rounds(input: &mut dyn BufRead, rounds: usize, relief: Option<u128>) -> u128 {
         let monkeys = parse_input(input);
         let mut game = Game { monkeys, relief };
 
-        for _ in 0..rounds {
+        for r in 0..rounds {
+            println!("Round #{}", r);
             game.play_round();
         }
 
@@ -26,27 +27,44 @@ mod day11 {
 
     fn parse_monkey(lines: &[String]) -> Monkey {
         let items = parse_starting_items(lines.get(1).unwrap());
-        let (operation, operation_argument) = parse_operation(lines.get(2).unwrap());
+        let (operator, operand) = parse_operation(lines.get(2).unwrap());
         let divisible_by = parse_divisible_by(lines.get(3).unwrap());
         let monkey_to_throw_if_true = parse_monkey_to_throw_if_true(lines.get(4).unwrap());
         let monkey_to_throw_if_false = parse_monkey_to_throw_if_false(lines.get(5).unwrap());
-        return Monkey { items, operation, operation_argument, divisible_by, monkey_to_throw_if_true, monkey_to_throw_if_false, inspected_items: 0 };
+        return Monkey { items, operator, operand, divisible_by, monkey_to_throw_if_true, monkey_to_throw_if_false, inspected_items: 0 };
     }
 
-    fn parse_starting_items(line: &String) -> Vec<u32> {
+    fn parse_starting_items(line: &String) -> Vec<Item> {
         return line.split_once(':').unwrap().1.trim()
-            .split(", ").map(|i| i.parse::<u32>().unwrap())
+            .split(", ").map(|i| i.parse::<u128>().unwrap())
+            .map(|v| Item::new(v))
             .collect();
     }
 
-    fn parse_operation(line: &String) -> (char, String) {
+    fn parse_operation(line: &String) -> (Operator, Option<u128>) {
         let tokens = line.split_once("=").unwrap().1.trim().split(' ').collect::<Vec<&str>>();
-        return (tokens.get(1).unwrap().chars().nth(0).unwrap(), tokens.get(2).unwrap().to_string());
+        
+        let operator_char = tokens.get(1).unwrap().chars().nth(0).unwrap();
+        let operator = match operator_char {
+            '+' => Ok(Operator::ADD),
+            '*' => Ok(Operator::MUL),
+            _ => Err(())
+        }.unwrap();
+        
+        let operand_token = tokens.get(2).unwrap().to_string();
+        let operand = if operand_token.eq("old") {
+            Option::None
+        }
+        else {
+            Some(operand_token.parse::<u128>().unwrap())
+        };
+
+        return (operator, operand);
     }
 
-    fn parse_divisible_by(line: &String) -> u32 {
+    fn parse_divisible_by(line: &String) -> u128 {
         let re = Regex::new(r"  Test: divisible by (\d+)").unwrap();
-        return re.captures(line).unwrap().get(1).unwrap().as_str().parse::<u32>().unwrap();
+        return re.captures(line).unwrap().get(1).unwrap().as_str().parse::<u128>().unwrap();
     }
 
     fn parse_monkey_to_throw_if_true(line: &String) -> usize {
@@ -60,57 +78,92 @@ mod day11 {
     }
 
     struct Monkey {
-        items: Vec<u32>,
-        operation: char,
-        operation_argument: String,
-        divisible_by: u32,
+        items: Vec<Item>,
+        operator: Operator,
+        operand: Option<u128>,
+        divisible_by: u128,
         monkey_to_throw_if_true: usize,
         monkey_to_throw_if_false: usize,
-        inspected_items: u32
+        inspected_items: u128
+    }
+
+    struct Item {
+        initial_value: u128,
+        operations: Vec<(Operator, Option<u128>)>
+    }
+
+    impl Item {
+        fn new(initial_value: u128) -> Item {
+            Item { initial_value, operations: Vec::new() }
+        }
+
+        fn add_operation(&mut self, operator: Operator, operand: Option<u128>) {
+            self.operations.push((operator, operand));
+        }
+
+        fn add_relief(&mut self, relief: u128) {
+            self.operations.push((Operator::DIV, Some(relief)));
+        }
+
+        fn perform_operations(&self, optimiser: Option<u128>) -> u128 {
+            let mut value = self.initial_value;
+
+            for (operator, operand) in self.operations.iter() {
+                let operand = operand.unwrap_or(value);
+                value = self.perform_operation(optimiser.map(|d| value % d).unwrap_or(value), operator, optimiser.map(|d| operand % d).unwrap_or(operand));
+            };
+
+            return value;
+        }
+
+        fn perform_operation(&self, value: u128, operator: &Operator, operand: u128) -> u128 {
+            return match operator {
+                Operator::ADD => value + operand,
+                Operator::MUL => value * operand,
+                Operator::DIV if operand == 0 => 0,
+                Operator::DIV => value / operand
+            };
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Operator {
+        ADD,
+        MUL,
+        DIV
     }
 
     impl Monkey {
-        fn inspect_next_item(&mut self, relief: u32) -> (u32, usize) {
-            let item = self.items.remove(0);
-            let new_worry_level = self.perform_operation(item, self.operation, &self.operation_argument);
-            let reduced_worry_level = self.reduce_worry_level(new_worry_level, relief);
-            let monkey_to_throw_to = if self.passes_test(reduced_worry_level, self.divisible_by) {
+        fn inspect_next_item(&mut self, relief: Option<u128>) -> (Item, usize) {
+            let mut item = self.items.remove(0);
+
+            item.add_operation(self.operator, self.operand);
+            if let Some(r) = relief {
+                item.add_relief(r);
+            }
+
+            let monkey_to_throw_to = if self.passes_test(&item, relief) {
                  self.monkey_to_throw_if_true
             }
             else {
                 self.monkey_to_throw_if_false
             };
+
             self.inspected_items += 1;
-            return (reduced_worry_level, monkey_to_throw_to);
+
+            return (item, monkey_to_throw_to);
         }
 
-        fn perform_operation(&self, item: u32, operation: char, argument: &String) -> u32 {
-            let resolved_argument = if argument.eq("old") {
-                item
-            }
-            else {
-                argument.parse::<u32>().unwrap()
-            };
-            
-            return match operation {
-                '+' => Ok(item + resolved_argument),
-                '*' => Ok(item * resolved_argument),
-                _ => Err(())
-            }.unwrap();
-        }
-
-        fn reduce_worry_level(&self, worry_level: u32, relief: u32) -> u32 {
-            return worry_level / relief;
-        }
-
-        fn passes_test(&self, worry_level: u32, divisible_by: u32) -> bool {
-            return worry_level % divisible_by == 0;
+        fn passes_test(&self, item: &Item, relief: Option<u128>) -> bool {
+            let optimiser: Option<u128> = if relief.is_none() { Some(self.divisible_by) } else { None };
+            let worry_level = item.perform_operations(optimiser);
+            return worry_level % self.divisible_by == 0;
         }
     }
 
     struct Game {
         monkeys: Vec<Monkey>,
-        relief: u32
+        relief: Option<u128>
     }
 
     impl Game {
@@ -123,16 +176,16 @@ mod day11 {
         fn make_turn(&mut self, monkey_id: usize) {
             for _ in 0..self.monkeys.get(monkey_id).unwrap().items.len() {
                 let (inspected_item, destination_monkey) = self.monkeys.get_mut(monkey_id).map(|m| m.inspect_next_item(self.relief)).unwrap();
-                self.pass_item_to_monkey(inspected_item, destination_monkey);
+                self.throw_item_to_monkey(inspected_item, destination_monkey);
             }
         }
 
-        fn pass_item_to_monkey(&mut self, item: u32, destination_monkey: usize) {
+        fn throw_item_to_monkey(&mut self, item: Item, destination_monkey: usize) {
             self.monkeys.get_mut(destination_monkey).unwrap().items.push(item);
         }
 
-        fn level_of_monkey_business(&self) -> u32 {
-            let mut inspections = self.monkeys.iter().map(|m| m.inspected_items).collect::<Vec<u32>>();
+        fn level_of_monkey_business(&self) -> u128 {
+            let mut inspections = self.monkeys.iter().map(|m| m.inspected_items).collect::<Vec<u128>>();
             inspections.sort();
             inspections.reverse();
             return inspections[0..2].iter().fold(1, |a, b| a * b);
@@ -148,18 +201,24 @@ mod tests {
     #[test]
     fn part1_sample_input() {
         let mut f = BufReader::new(File::open("./sample.input").unwrap());
-        assert_eq!(day11::level_of_monkey_business_after_rounds(&mut f, 20, 3), 10605);
+        assert_eq!(day11::level_of_monkey_business_after_rounds(&mut f, 20, Some(3)), 10605);
     }
 
     #[test]
     fn part1_day_input() {
         let mut f = BufReader::new(File::open("./day.input").unwrap());
-        assert_eq!(day11::level_of_monkey_business_after_rounds(&mut f, 20, 3), 72884);
+        assert_eq!(day11::level_of_monkey_business_after_rounds(&mut f, 20, Some(3)), 72884);
     }
 
     #[test]
     fn part2_sample_input() {
         let mut f = BufReader::new(File::open("./sample.input").unwrap());
-        assert_eq!(day11::level_of_monkey_business_after_rounds(&mut f, 10000, 1), 2713310158);
+        assert_eq!(day11::level_of_monkey_business_after_rounds(&mut f, 10000, None), 2713310158);
+    }
+
+    #[test]
+    fn part2_day_input() {
+        let mut f = BufReader::new(File::open("./day.input").unwrap());
+        assert_eq!(day11::level_of_monkey_business_after_rounds(&mut f, 10000, None), 15310845153);
     }
 }
