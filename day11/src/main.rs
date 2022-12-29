@@ -3,8 +3,8 @@ mod day11 {
     use regex::Regex;
 
     pub fn level_of_monkey_business_after_rounds(input: &mut dyn BufRead, rounds: usize, relief: Option<u128>) -> u128 {
-        let monkeys = parse_input(input);
-        let mut game = Game { monkeys, relief };
+        let monkeys = parse_input(input, relief);
+        let mut game = Game { monkeys };
 
         for r in 0..rounds {
             println!("Round #{}", r);
@@ -14,10 +14,10 @@ mod day11 {
         return game.level_of_monkey_business();
     }
 
-    fn parse_input(input: &mut dyn BufRead) -> Vec<Monkey> {
+    fn parse_input(input: &mut dyn BufRead, relief: Option<u128>) -> Vec<Monkey> {
         let lines = read_input(input);
         return lines.split(|line| line == "")
-            .map(|monkey| parse_monkey(monkey))
+            .map(|monkey| parse_monkey(monkey, relief))
             .collect();
     }
 
@@ -25,14 +25,14 @@ mod day11 {
         return input.lines().map(Result::unwrap).collect();
     }
 
-    fn parse_monkey(lines: &[String]) -> Monkey {
+    fn parse_monkey(lines: &[String], relief: Option<u128>) -> Monkey {
         let monkey_id = parse_monkey_id(lines.get(0).unwrap());
         let items = parse_starting_items(lines.get(1).unwrap(), monkey_id);
         let (operator, operand) = parse_operation(lines.get(2).unwrap());
         let divisible_by = parse_divisible_by(lines.get(3).unwrap());
         let monkey_to_throw_if_true = parse_monkey_to_throw_if_true(lines.get(4).unwrap());
         let monkey_to_throw_if_false = parse_monkey_to_throw_if_false(lines.get(5).unwrap());
-        return Monkey { items, operator, operand, divisible_by, monkey_to_throw_if_true, monkey_to_throw_if_false, inspected_items: 0, cache: HashMap::new() };
+        return Monkey { items, operator, operand, divisible_by, monkey_to_throw_if_true, monkey_to_throw_if_false, inspected_items: 0, relief: relief, cache: HashMap::new() };
     }
 
     fn parse_monkey_id(line: &String) -> usize {
@@ -92,6 +92,7 @@ mod day11 {
         monkey_to_throw_if_true: usize,
         monkey_to_throw_if_false: usize,
         inspected_items: u128,
+        relief: Option<u128>,
         cache: HashMap<String, (usize, u128)>
     }
 
@@ -113,28 +114,6 @@ mod day11 {
         fn add_relief(&mut self, relief: u128) {
             self.operations.push((Operator::DIV, Some(relief)));
         }
-
-        fn perform_operations(&self, optimiser: Option<u128>, cached_value: Option<(usize, u128)>) -> u128 {
-            // let mut value = self.initial_value;
-            // let s = self.operations.len();
-            let (offset, mut value) = cached_value.unwrap_or((0, self.initial_value));
-
-            for (operator, operand) in self.operations.iter().skip(offset) {
-                let operand = operand.unwrap_or(value);
-                value = self.perform_operation(optimiser.map(|d| value % d).unwrap_or(value), operator, optimiser.map(|d| operand % d).unwrap_or(operand));
-            };
-
-            return value;
-        }
-
-        fn perform_operation(&self, value: u128, operator: &Operator, operand: u128) -> u128 {
-            return match operator {
-                Operator::ADD => value + operand,
-                Operator::MUL => value * operand,
-                Operator::DIV if operand == 0 => 0,
-                Operator::DIV => value / operand
-            };
-        }
     }
 
     #[derive(Clone, Copy)]
@@ -145,15 +124,15 @@ mod day11 {
     }
 
     impl Monkey {
-        fn inspect_next_item(&mut self, relief: Option<u128>) -> (Item, usize) {
+        fn inspect_next_item(&mut self) -> (Item, usize) {
             let mut item = self.items.remove(0);
 
             item.add_operation(self.operator, self.operand);
-            if let Some(r) = relief {
+            if let Some(r) = self.relief {
                 item.add_relief(r);
             }
 
-            let monkey_to_throw_to = if self.passes_test(&item, relief) {
+            let monkey_to_throw_to = if self.passes_test(&item) {
                  self.monkey_to_throw_if_true
             }
             else {
@@ -165,22 +144,46 @@ mod day11 {
             return (item, monkey_to_throw_to);
         }
 
-        fn passes_test(&mut self, item: &Item, relief: Option<u128>) -> bool {
-            let optimiser: Option<u128> = if relief.is_none() { Some(self.divisible_by) } else { None };
-            let v = self.cache.remove(&item.id);
-            let worry_level = item.perform_operations(optimiser, v);
-            self.cache_worry_level(item, worry_level);
+        fn passes_test(&mut self, item: &Item) -> bool {
+            let optimiser: Option<u128> = if self.relief.is_none() { Some(self.divisible_by) } else { None };
+            let worry_level = self.perform_operations(item, optimiser);
             return worry_level % self.divisible_by == 0;
         }
 
-        fn cache_worry_level(&mut self, item: &Item, worry_level: u128) {
+        fn perform_operations(&mut self, item: &Item, optimiser: Option<u128>) -> u128 {
+            let (offset, mut value) = self.get_cached_item_value(item);
+
+            for (operator, operand) in item.operations.iter().skip(offset) {
+                let operand = operand.unwrap_or(value);
+                value = self.perform_operation(optimiser.map(|d| value % d).unwrap_or(value), operator, optimiser.map(|d| operand % d).unwrap_or(operand));
+            };
+
+            self.cache_item_value(item, value);
+
+            return value;
+        }
+
+        fn get_cached_item_value(&mut self, item: &Item) -> (usize, u128) {
+            let cached_value = self.cache.remove(&item.id);
+            return cached_value.unwrap_or((0, item.initial_value));
+        }
+
+        fn perform_operation(&self, value: u128, operator: &Operator, operand: u128) -> u128 {
+            return match operator {
+                Operator::ADD => value + operand,
+                Operator::MUL => value * operand,
+                Operator::DIV if operand == 0 => 0,
+                Operator::DIV => value / operand
+            };
+        }
+
+        fn cache_item_value(&mut self, item: &Item, worry_level: u128) {
             self.cache.insert(String::from(&item.id), (item.operations.len(), worry_level));
         }
     }
 
     struct Game {
-        monkeys: Vec<Monkey>,
-        relief: Option<u128>
+        monkeys: Vec<Monkey>
     }
 
     impl Game {
@@ -192,7 +195,7 @@ mod day11 {
 
         fn make_turn(&mut self, monkey_id: usize) {
             for _ in 0..self.monkeys.get(monkey_id).unwrap().items.len() {
-                let (inspected_item, destination_monkey) = self.monkeys.get_mut(monkey_id).map(|m| m.inspect_next_item(self.relief)).unwrap();
+                let (inspected_item, destination_monkey) = self.monkeys.get_mut(monkey_id).map(|m| m.inspect_next_item()).unwrap();
                 self.throw_item_to_monkey(inspected_item, destination_monkey);
             }
         }
