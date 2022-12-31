@@ -12,6 +12,18 @@ mod day14 {
         return cave.count_sand_at_rest();
     }
 
+    pub fn how_many_units_of_sand_come_to_rest_before_sand_of_source_becomes_blocked(input: &mut dyn BufRead) -> usize {
+        let mut cave = CaveBuilder::new()
+            .with_rocks(parse_input(input))
+            .with_sand_source(500, 0)
+            .with_infinite_horizonal_floor(2)
+            .build();
+
+        cave.stabilize();
+
+        return cave.count_sand_at_rest();
+    }
+
     fn parse_input(input: &mut dyn BufRead) -> Vec<Vec<(usize, usize)>> {
         return read_input(input).iter().map(parse_rock_path).collect();
     }
@@ -43,9 +55,9 @@ mod day14 {
 
         fn stabilize(&mut self) {
             loop {
-                self.print();
-                let sand_unit = self.generate_sand_unit();
-                if sand_unit.is_none() {
+                // self.print();
+                let sand_tile = self.generate_sand_tile();
+                if sand_tile.is_none() {
                     break;
                 }
             }
@@ -53,18 +65,16 @@ mod day14 {
             self.print();
         }
 
-        fn generate_sand_unit(&mut self) -> Option<(usize, usize)> {
-            let mut sand_unit = self.sand_source;
+        fn generate_sand_tile(&mut self) -> Option<(usize, usize)> {
+            let mut sand_tile = self.sand_source;
 
             loop {
-                let drop_moves = self.drop_moves(&sand_unit);
-
-                match self.analyze_drop_moves(&drop_moves) {
-                    Ok(d_coords) => {
-                        sand_unit = d_coords;
+                match self.analyze_drop_moves(&sand_tile) {
+                    Ok(coords) => {
+                        sand_tile = coords;
                     },
                     Err(TileError::Blocked) => {
-                        self.grid.set(sand_unit.0, sand_unit.1, Object::Sand);
+                        self.grid.set(sand_tile.0, sand_tile.1, Object::Sand);
                         break;
                     },
                     Err(TileError::Void) => {
@@ -73,13 +83,17 @@ mod day14 {
                 }
             }
 
-            return Some(sand_unit);
+            if sand_tile == self.sand_source {
+                return None;
+            }
+
+            return Some(sand_tile);
         }
 
-        fn analyze_drop_moves(&self, drop_moves: &Vec<Result<(usize, usize), TileError>>) -> Result<(usize, usize), TileError> {
-            for dm in drop_moves {
-                let possible_move = match dm {
-                    Ok(coords) => Some(Ok(*coords)),
+        fn analyze_drop_moves(&self, coords: &(usize, usize)) -> Result<(usize, usize), TileError> {
+            for drop_move in self.drop_moves(coords) {
+                let possible_move = match drop_move {
+                    Ok(coords) => Some(Ok(coords)),
                     Err(TileError::Blocked) => None,
                     Err(TileError::Void) => Some(Err(TileError::Void))
                 };
@@ -134,11 +148,13 @@ mod day14 {
 
     struct CaveBuilder {
         rock_paths: Vec<Vec<(usize, usize)>>,
-        sand_source: (usize, usize)
+        sand_source: (usize, usize),
+        infinite_horizontal_floor_elevation_offset: Option<usize>
     }
+
     impl CaveBuilder {
         fn new() -> CaveBuilder {
-            return CaveBuilder{ rock_paths: vec![], sand_source: (500, 0) };
+            return CaveBuilder{ rock_paths: vec![], sand_source: (500, 0), infinite_horizontal_floor_elevation_offset: None };
         }
 
         fn with_rocks(&mut self, rock_paths: Vec<Vec<(usize, usize)>>) -> &mut CaveBuilder {
@@ -151,24 +167,32 @@ mod day14 {
             return self;
         }
 
+        fn with_infinite_horizonal_floor(&mut self, y_offset: usize) -> &mut CaveBuilder {
+            self.infinite_horizontal_floor_elevation_offset = Some(y_offset);
+            return self;
+        }
+
         fn build(&self) -> Cave {
             let mut coords = self.rock_paths.iter()
                 .flat_map(|row| row)
                 .collect::<Vec<&(usize, usize)>>();
             coords.push(&self.sand_source);
 
-            let min_x = coords.iter().map(|(x, _)| x).min().unwrap();
-            let max_x = coords.iter().map(|(x, _)| x).max().unwrap();
             let min_y = coords.iter().map(|(_, y)| y).min().unwrap();
-            let max_y = coords.iter().map(|(_, y)| y).max().unwrap();
+            let max_y = coords.iter().map(|(_, y)| y).max().map(|max| max + self.infinite_horizontal_floor_elevation_offset.unwrap_or(0)).unwrap();
+            let height = (max_y - min_y) as usize;
 
-            let width = max_x - min_x;
-            let height = max_y - min_y;
+            let translate_y = |y: usize| (height as isize - (max_y as isize - y as isize)) as usize;
 
-            let translate_x = |x: usize| width - (max_x - x);
-            let translate_y = |y: usize| height - (max_y - y);
+            let min_x_candidate = coords.iter().map(|(x, _)| x).min().unwrap();
+            let min_x = self.infinite_horizontal_floor_elevation_offset.map(|_| cmp::min(*min_x_candidate, self.sand_source.0 - height - 3) as isize).unwrap_or(*min_x_candidate as isize);
+            let max_x_candidate = coords.iter().map(|(x, _)| x).max().unwrap();
+            let max_x = self.infinite_horizontal_floor_elevation_offset.map(|_| cmp::max(*max_x_candidate, self.sand_source.0 + height + 3)).unwrap_or(*max_x_candidate);
+            let width = (max_x as isize - min_x) as usize;
 
-            let mut grid = CartesianGrid {grid: vec![vec![Object::Air; width + 1]; height + 1] };
+            let translate_x = |x: isize| (width as isize - (max_x as isize - x)) as usize;
+
+            let mut grid = CartesianGrid { grid: vec![vec![Object::Air; width + 1]; height + 1] };
 
             for rock_path in self.rock_paths.iter() {
                 for rock_line in rock_path.windows(2) {
@@ -176,12 +200,18 @@ mod day14 {
                     let to = rock_line.get(1).unwrap();
 
                     for (x, y) in grid.get_continuous_coords(from, to) {
-                        grid.set(translate_x(x), translate_y(y), Object::Rock);
+                        grid.set(translate_x(x as isize), translate_y(y), Object::Rock);
                     }
                 }
             }
 
-            let translated_sand_source = (translate_x(self.sand_source.0), translate_y(self.sand_source.1));
+            if self.infinite_horizontal_floor_elevation_offset.is_some() {
+                for (x, y) in grid.get_continuous_coords(&(0, height), &(width, height)) {
+                    grid.set(x, y, Object::Rock);
+                }
+            }
+
+            let translated_sand_source = (translate_x(self.sand_source.0 as isize), translate_y(self.sand_source.1));
 
             grid.set(translated_sand_source.0, translated_sand_source.1, Object::SourceOfSand);
 
@@ -291,5 +321,17 @@ mod tests {
     fn part1_day_input() {
         let mut f = BufReader::new(File::open("./day.input").unwrap());
         assert_eq!(day14::how_many_units_of_sand_come_to_rest_before_sand_starts_flowing_into_the_abyss_below(&mut f), 665);
+    }
+
+    #[test]
+    fn part2_sample_input() {
+        let mut f = BufReader::new(File::open("./sample.input").unwrap());
+        assert_eq!(day14::how_many_units_of_sand_come_to_rest_before_sand_of_source_becomes_blocked(&mut f), 93);
+    }
+
+    #[test]
+    fn part2_day_input() {
+        let mut f = BufReader::new(File::open("./day.input").unwrap());
+        assert_eq!(day14::how_many_units_of_sand_come_to_rest_before_sand_of_source_becomes_blocked(&mut f), 25434);
     }
 }
